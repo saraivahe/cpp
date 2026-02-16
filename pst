@@ -1,73 +1,74 @@
-Step 5 — Gate rendering should be driven primarily by context state
+Task 1 — Backend: classify expired WebHub token
 
-In AuthGate render:
-	12.	Replace the current “local status” logic with this model:
-
-	•	If state.status === "loading" → show loader
-	•	If state.status === "error" → show error UI
-	•	If state.status === "authenticated" → render children
-	•	If state.status === "unauthenticated" → Gate should be in the process of redirecting or checking WebHub, so show loader (not error).
-
-You can keep a small local phase if needed (e.g. "checkingWebhub"), but do not store user data locally.
-
-✅ Outcome: one consistent UI behavior.
+In AuthService.validate_webhub_token(...), when resp.status_code == 404, raise a distinct auth error (e.g. AuthenticationError("SSO_TOKEN_EXPIRED")). Keep the existing behavior for other non-200s.
 
 ⸻
 
-Step 6 — Make redirect loop prevention robust
+Task 2 — Backend: make /auth/bootstrap return loginUrl + error code on 401
 
-In AuthGate:
-	13.	Keep your phar:lastSsoRedirect safeguard, but adjust behavior:
+In the /auth/bootstrap endpoint, catch that specific AuthenticationError("SSO_TOKEN_EXPIRED") and return:
 
-	•	If you detect “we just redirected less than 5s ago”, do NOT set hard error immediately.
-	•	Instead show a message like “Completing sign in…” + keep loader for a few seconds, then retry WebHub account once.
 
-(Agent instruction: replace the immediate setStatus("error") with a short delay + retry. This prevents false errors on slow redirect flows.)
+{ "error": "SSO_TOKEN_EXPIRED", "loginUrl": "<webhub>/api/v1.0/auth/login" }
 
-✅ Outcome: fewer “Authentication failed” false negatives.
 
-⸻
+Also catch the generic “not authenticated / validation failed” case and return:
 
-Step 7 — Ensure callback route actually triggers auth again
+{ "error": "NOT_AUTHENTICATED", "loginUrl": "<webhub>/api/v1.0/auth/login" }
 
-Currently /auth/callback route probably only navigates back.
-	14.	Ensure that on /auth/callback page you do one of:
 
-	•	Call refreshMe() immediately (or just let the app mount and Gate refresh)
-	•	Then navigate to returnTo
-
-If your callback immediately navigates without giving Gate a chance to run, it can still work, but it’s safer to let Gate run once.
-
-✅ Outcome: after SSO redirect back, PHAR session is created and user loads.
+(Still HTTP 401.)
 
 ⸻
 
-Step 8 — Make sure App.tsx wrapping order is correct
-	15.	In App.tsx, the order should be:
+Task 3 — Backend: clear PHAR session cookie on bootstrap 401
 
-	•	QueryClientProvider
-	•	AuthProvider
-	•	AppErrorBoundary
-	•	AuthGate
-	•	other providers (MockupTabsProvider)
-	•	RouterProvider
-
-(You already have this pattern; tell agent to confirm that AuthGate is inside AuthProvider.)
-
-✅ Outcome: Gate can call useAuth().
+Before returning either of those 401 JSON responses from /auth/bootstrap, call clear_session_cookie(response) so a stale PHAR cookie can’t keep causing confusing behavior.
 
 ⸻
 
-Step 9 — Add logging temporarily (for confidence)
-	16.	Ask agent to add temporary console logs in Gate:
+Task 4 — Frontend: treat bootstrap 401 payload as authoritative
 
-	•	when state.status changes
-	•	when WebHub account succeeds
-	•	when bootstrapWithPayload succeeds
-	•	when redirect triggers
-
-Then remove after validation.
-
-✅ Outcome: you’ll know exactly which path is happening.
+In the place where you call PHAR /auth/bootstrap (inside AuthGate), if it throws with status === 401, read e.body.error and e.body.loginUrl. Do not treat all 401s the same anymore.
 
 ⸻
+
+Task 5 — Frontend: handle SSO_TOKEN_EXPIRED by hard reset + redirect
+
+If /auth/bootstrap fails with:
+	•	error === "SSO_TOKEN_EXPIRED"
+
+then do these in order:
+	1.	sessionStorage.removeItem("phar:lastSsoRedirect")
+	2.	(optional) keep or reset phar:returnTo (I recommend keeping it)
+	3.	set sessionStorage.setItem("phar:lastSsoRedirect", Date.now().toString())
+	4.	window.location.assign(loginUrlWithReturnTo)
+
+No retries, no polling.
+
+⸻
+
+Task 6 — Frontend: handle NOT_AUTHENTICATED by redirect (no looping)
+
+If /auth/bootstrap fails with:
+	•	error === "NOT_AUTHENTICATED"
+
+then redirect to loginUrlWithReturnTo using the same redirect guard you already have (the 5-second loop protection). Don’t re-call bootstrap in a tight loop.
+
+⸻
+
+Task 7 — Frontend: improve redirect loop protection behavior
+
+Where you currently do:
+
+“if last redirect < 5s, setStatus(‘error’)”
+
+Change it to:
+	•	If last redirect was < 5s ago: show loader and stop (no error screen).
+This avoids false “Authentication failed” while SSO is bouncing back.
+
+⸻
+
+Task 8 — Frontend: ensure only ONE auth “driver” runs
+
+Make sure AuthGate does not call /auth/bootstrap repeatedly once a redirect has been triggered. After window.location.assign(...), return immediately and don’t continue logic.
