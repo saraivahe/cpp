@@ -1,0 +1,73 @@
+Step 5 — Gate rendering should be driven primarily by context state
+
+In AuthGate render:
+	12.	Replace the current “local status” logic with this model:
+
+	•	If state.status === "loading" → show loader
+	•	If state.status === "error" → show error UI
+	•	If state.status === "authenticated" → render children
+	•	If state.status === "unauthenticated" → Gate should be in the process of redirecting or checking WebHub, so show loader (not error).
+
+You can keep a small local phase if needed (e.g. "checkingWebhub"), but do not store user data locally.
+
+✅ Outcome: one consistent UI behavior.
+
+⸻
+
+Step 6 — Make redirect loop prevention robust
+
+In AuthGate:
+	13.	Keep your phar:lastSsoRedirect safeguard, but adjust behavior:
+
+	•	If you detect “we just redirected less than 5s ago”, do NOT set hard error immediately.
+	•	Instead show a message like “Completing sign in…” + keep loader for a few seconds, then retry WebHub account once.
+
+(Agent instruction: replace the immediate setStatus("error") with a short delay + retry. This prevents false errors on slow redirect flows.)
+
+✅ Outcome: fewer “Authentication failed” false negatives.
+
+⸻
+
+Step 7 — Ensure callback route actually triggers auth again
+
+Currently /auth/callback route probably only navigates back.
+	14.	Ensure that on /auth/callback page you do one of:
+
+	•	Call refreshMe() immediately (or just let the app mount and Gate refresh)
+	•	Then navigate to returnTo
+
+If your callback immediately navigates without giving Gate a chance to run, it can still work, but it’s safer to let Gate run once.
+
+✅ Outcome: after SSO redirect back, PHAR session is created and user loads.
+
+⸻
+
+Step 8 — Make sure App.tsx wrapping order is correct
+	15.	In App.tsx, the order should be:
+
+	•	QueryClientProvider
+	•	AuthProvider
+	•	AppErrorBoundary
+	•	AuthGate
+	•	other providers (MockupTabsProvider)
+	•	RouterProvider
+
+(You already have this pattern; tell agent to confirm that AuthGate is inside AuthProvider.)
+
+✅ Outcome: Gate can call useAuth().
+
+⸻
+
+Step 9 — Add logging temporarily (for confidence)
+	16.	Ask agent to add temporary console logs in Gate:
+
+	•	when state.status changes
+	•	when WebHub account succeeds
+	•	when bootstrapWithPayload succeeds
+	•	when redirect triggers
+
+Then remove after validation.
+
+✅ Outcome: you’ll know exactly which path is happening.
+
+⸻
