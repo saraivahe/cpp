@@ -1,1 +1,210 @@
+Task 0 — Inventory only (no code)
 
+Do not change code.
+Find and list (file + function name) all backend places that:
+	1.	Read/query Snapshot (or workspace/snapshot equivalents) and filter by entity_code and/or source_code.
+	2.	List workspaces / load grid / set override / list overrides.
+	3.	Admin-only endpoints (role management, scope management).
+
+Reply with the list grouped by:
+	•	“workspace/grid”
+	•	“overrides”
+	•	“admin endpoints”
+	•	“entities/sources listing”
+
+⸻
+
+Task 1 — Add AuthzContext model
+
+Create file: app/core/authz.py
+
+Add:
+	•	@dataclass(frozen=True) class AuthzContext:
+	•	user_id: str
+	•	roles: list[str]
+	•	is_admin: bool
+	•	allowed_entities: set[str] | None  (None means ALL)
+	•	allowed_sources: set[str] | None  (None means ALL)
+	•	Methods:
+	•	can_access_entity(entity_code: str) -> bool
+	•	can_access_source(source_code: str) -> bool
+
+No other logic in this file.
+
+⸻
+
+Task 2 — Add AccessControlService to compute allowed entities/sources
+
+Create file: app/services/access_control.py
+
+Implement:
+	•	class AccessControlService:
+	•	__init__(self, db: Session)
+	•	def is_admin(self, role_names: list[str]) -> bool → "ADMIN" in role_names
+	•	def get_allowed_entities(self, user_id: str, role_names: list[str]) -> set[str]
+	•	union role-based entity scopes (and user entity scopes if your project uses them)
+	•	def get_allowed_sources(self, user_id: str, role_names: list[str]) -> set[str]
+	•	role-based source scopes only
+
+Important:
+	•	Do NOT reference mockup scope tables.
+	•	Use SQLAlchemy select(...) and .scalars().all() patterns consistent with the repo.
+
+⸻
+
+Task 3 — Add authz dependency get_authz_context
+
+Edit file: wherever get_current_user() dependency lives (your “security/session helpers” module).
+
+Add:
+	•	from app.core.authz import AuthzContext
+	•	from app.services.access_control import AccessControlService
+
+Add new dependency:
+
+def get_authz_context(current: CurrentUser = Depends(get_current_user), db: Session = Depends(get_session)) -> AuthzContext:
+
+Rules:
+	•	acs = AccessControlService(db)
+	•	If admin: allowed_entities=None, allowed_sources=None
+	•	Else:
+	•	allowed_entities = acs.get_allowed_entities(current.id, current.roles)
+	•	allowed_sources = acs.get_allowed_sources(current.id, current.roles)
+	•	Return AuthzContext(...)
+
+No caching in this task.
+
+⸻
+
+Task 4 — Add guard helpers
+
+Create file: app/core/authz_guards.py
+
+Add:
+	•	require_admin(authz: AuthzContext) -> None
+	•	require_entity(authz: AuthzContext, entity_code: str) -> None
+	•	require_source(authz: AuthzContext, source_code: str) -> None
+
+Each raises PermissionDeniedError on failure.
+
+Do not add any FastAPI dependencies here.
+
+⸻
+
+Task 5 — Update /users/me to include scopes from authz
+
+Edit file: endpoint implementing GET /users/me (or /auth/me if that’s what you use; match frontend).
+
+Changes:
+	1.	Add param: authz: AuthzContext = Depends(get_authz_context)
+	2.	Return scopes:
+	•	entities: "ALL" if authz.allowed_entities is None else sorted list
+	•	sources: "ALL" if authz.allowed_sources is None else sorted list
+	3.	Keep roles and is_admin
+
+Do not change response shape beyond adding scopes.
+
+⸻
+
+Task 6 — Enforce admin-only on admin endpoints
+
+Edit files: endpoints that manage roles/users/scopes (found in Task 0).
+
+For each admin endpoint function:
+	1.	Add param: authz: AuthzContext = Depends(get_authz_context)
+	2.	Add first line: require_admin(authz)
+
+Do not change endpoint outputs.
+
+⸻
+
+Task 7 — Add SQL filtering inputs to the snapshot/workspace repository methods
+
+Edit files: repository methods identified in Task 0 that query snapshots/workspaces.
+
+For each relevant method:
+	1.	Add optional params:
+	•	allowed_entities: list[str] | None = None
+	•	allowed_sources: list[str] | None = None
+	2.	Apply in query:
+	•	if allowed_entities is not None: where(Snapshot.entity_code.in_(allowed_entities))
+	•	if allowed_sources is not None: where(Snapshot.source_code.in_(allowed_sources))
+
+Important:
+	•	Do not post-filter in Python.
+	•	Apply filters as early as possible (on the snapshot/workspace base query).
+
+⸻
+
+Task 8 — Thread authz into services that call those repos
+
+Edit service files: the service layer functions that call the repos from Task 7.
+
+For each service method that loads workspaces/grids:
+	1.	Accept authz: AuthzContext (or accept allowed_entities/allowed_sources, but authz is preferred)
+	2.	Call repo with:
+	•	allowed_entities=None if admin else sorted(list(authz.allowed_entities))
+	•	allowed_sources=None if admin else sorted(list(authz.allowed_sources))
+
+If a method receives explicit entity_code / source_code:
+	•	call require_entity(authz, entity_code) and require_source(authz, source_code) before querying.
+
+⸻
+
+Task 9 — Update endpoints to pass authz into the services
+
+Edit endpoint files: workspace/grid/override endpoints.
+
+For each endpoint:
+	1.	Add param: authz: AuthzContext = Depends(get_authz_context)
+	2.	Pass authz to the service call (updated in Task 8)
+
+Do not change endpoint paths or response models.
+
+⸻
+
+Task 10 — Fix “list endpoints” to return only allowed items
+
+Edit endpoints/services/repo for:
+	•	listing entities
+	•	listing sources
+	•	listing workspaces (if it returns a list)
+
+Rules:
+	•	If admin: no filters
+	•	Else: apply IN (allowed_entities) or IN (allowed_sources) in SQL
+	•	If allowed list is empty: return empty list (200), not 403.
+
+⸻
+
+Task 11 — Add minimal debug logging (temporary, remove later)
+
+Edit get_authz_context only:
+	•	Add a debug log line (using your project logger) showing:
+	•	user id
+	•	is_admin
+	•	counts of allowed entities and sources
+	•	Make it safe (no printing full lists in prod).
+
+Do not add new endpoints for debug.
+
+⸻
+
+Task 12 — Smoke-check checklist (no code)
+
+After completing Tasks 1–11, verify manually:
+	1.	Admin user can access any entity/source.
+	2.	Normal user can list only allowed entities/sources.
+	3.	Normal user gets 403 when requesting forbidden entity/source grid.
+	4.	/users/me returns scopes correctly.
+	5.	Admin endpoints return 403 for normal user.
+
+Reply with which endpoints were tested and what happened.
+
+⸻
+
+Notes for the agent (do not change these constraints)
+	•	Ignore mockup scopes entirely.
+	•	Don’t refactor unrelated code.
+	•	Push filtering into SQL (WHERE IN), not Python filtering.
+	•	Keep all changes minimal and localized.
