@@ -1,210 +1,192 @@
+Frontend Authorization Tasks (Agent-Ready)
+
 Task 0 — Inventory only (no code)
 
 Do not change code.
-Find and list (file + function name) all backend places that:
-	1.	Read/query Snapshot (or workspace/snapshot equivalents) and filter by entity_code and/or source_code.
-	2.	List workspaces / load grid / set override / list overrides.
-	3.	Admin-only endpoints (role management, scope management).
+List the following with file paths:
+	1.	Router definition file(s) (router.tsx / router.ts / similar).
+	2.	Where nav/menu items are defined (sidebar/topbar).
+	3.	Where entity selection UI lives (entity dropdown in catalog/workspaces).
+	4.	Where “source” selection is (even if currently fixed).
+	5.	The shared API client (api() helper) and where React Query query keys/fetchers live.
 
-Reply with the list grouped by:
-	•	“workspace/grid”
-	•	“overrides”
-	•	“admin endpoints”
-	•	“entities/sources listing”
+Reply with the list grouped by “routing / nav / entity-source UI / data fetching”.
 
 ⸻
 
-Task 1 — Add AuthzContext model
+Task 1 — Define a single permission helper module
 
-Create file: app/core/authz.py
+Create file: src/app/auth/permissions.ts
 
-Add:
-	•	@dataclass(frozen=True) class AuthzContext:
-	•	user_id: str
-	•	roles: list[str]
-	•	is_admin: bool
-	•	allowed_entities: set[str] | None  (None means ALL)
-	•	allowed_sources: set[str] | None  (None means ALL)
-	•	Methods:
-	•	can_access_entity(entity_code: str) -> bool
-	•	can_access_source(source_code: str) -> bool
+Add functions (no React here):
+	1.	export function isAdmin(me: MeResponse | null | undefined): boolean
+	2.	export function allowedEntities(me: MeResponse | null | undefined): Set<string> | null
+	•	return null if me?.scopes.entities === "ALL"
+	•	else return new Set(me.scopes.entities)
+	3.	export function allowedSources(me: MeResponse | null | undefined): Set<string> | null
+	•	same pattern
+	4.	export function canAccessEntity(me, entityCode: string): boolean
+	5.	export function canAccessSource(me, sourceCode: string): boolean
 
-No other logic in this file.
-
-⸻
-
-Task 2 — Add AccessControlService to compute allowed entities/sources
-
-Create file: app/services/access_control.py
-
-Implement:
-	•	class AccessControlService:
-	•	__init__(self, db: Session)
-	•	def is_admin(self, role_names: list[str]) -> bool → "ADMIN" in role_names
-	•	def get_allowed_entities(self, user_id: str, role_names: list[str]) -> set[str]
-	•	union role-based entity scopes (and user entity scopes if your project uses them)
-	•	def get_allowed_sources(self, user_id: str, role_names: list[str]) -> set[str]
-	•	role-based source scopes only
-
-Important:
-	•	Do NOT reference mockup scope tables.
-	•	Use SQLAlchemy select(...) and .scalars().all() patterns consistent with the repo.
+No other logic.
 
 ⸻
 
-Task 3 — Add authz dependency get_authz_context
+Task 2 — Add a ProtectedRoute wrapper component
 
-Edit file: wherever get_current_user() dependency lives (your “security/session helpers” module).
+Create file: src/app/auth/ProtectedRoute.tsx
 
-Add:
-	•	from app.core.authz import AuthzContext
-	•	from app.services.access_control import AccessControlService
+Implement a component that:
+	•	reads useAuth()
+	•	if auth state is not "authenticated", render nothing (AuthGate will handle it)
+	•	if requiresAdmin prop is true and user is not admin → render a simple “403 / Not allowed” page (Mantine-friendly)
+	•	if requiredEntities prop exists → check canAccessEntity(...) for all; if any fail, show 403
+	•	if requiredSources prop exists → check similarly
 
-Add new dependency:
+Export component:
+	•	export function ProtectedRoute(props: { children: React.ReactNode; requiresAdmin?: boolean; requiredEntities?: string[]; requiredSources?: string[]; }): JSX.Element
 
-def get_authz_context(current: CurrentUser = Depends(get_current_user), db: Session = Depends(get_session)) -> AuthzContext:
+No redirects here (keep it simple).
+
+⸻
+
+Task 3 — Gate admin-only routes in the router definition
+
+Edit file: your router definition (from Task 0).
+
+For each admin-only page route:
+	•	Wrap its element with <ProtectedRoute requiresAdmin>...</ProtectedRoute>
+
+Example pattern:
+	•	element: <ProtectedRoute requiresAdmin><AdminPage /></ProtectedRoute>
+
+Do not change paths.
+
+⸻
+
+Task 4 — Gate profile-only routes (non-admin) via role list (minimal)
+
+Edit file: src/app/auth/permissions.ts
+
+Add helper:
+	•	export function hasRole(me: MeResponse | null | undefined, role: string): boolean (me?.roles.includes(role))
+
+Then in router, for routes restricted to certain roles:
+	•	wrap with <ProtectedRoute> but also add a small requiresRole?: string[] support OR do a custom wrapper locally.
+
+Preferred (small change):
+	•	Extend ProtectedRoute with requiredRoles?: string[]:
+	•	allow if admin OR if any role matches.
+
+Apply to routes that should only be accessible to some roles.
+
+⸻
+
+Task 5 — Hide nav items based on permissions (do not remove routes)
+
+Edit file: nav/menu definition (from Task 0).
 
 Rules:
-	•	acs = AccessControlService(db)
-	•	If admin: allowed_entities=None, allowed_sources=None
-	•	Else:
-	•	allowed_entities = acs.get_allowed_entities(current.id, current.roles)
-	•	allowed_sources = acs.get_allowed_sources(current.id, current.roles)
-	•	Return AuthzContext(...)
+	•	If item is admin-only: render only when isAdmin(me)
+	•	If item is role-limited: render only when hasRole(me, "ROLE_NAME") OR admin
+	•	If item depends on entity/source access: render only if allowed set is not empty (or ALL)
 
-No caching in this task.
+Do not delete routes; this is UI-only.
 
 ⸻
 
-Task 4 — Add guard helpers
+Task 6 — Filter entity dropdowns using scopes
 
-Create file: app/core/authz_guards.py
+Edit file: the component(s) that list entities (catalog filters, workspace selection, etc.).
 
-Add:
-	•	require_admin(authz: AuthzContext) -> None
-	•	require_entity(authz: AuthzContext, entity_code: str) -> None
-	•	require_source(authz: AuthzContext, source_code: str) -> None
+Change behavior:
+	•	When you load entity list from backend, it should already be filtered; still enforce in UI:
+	•	If me.scopes.entities !== "ALL", filter options to that set (defensive)
+	•	If entity list ends up empty:
+	•	show a friendly message: “No entities assigned to your profile.”
 
-Each raises PermissionDeniedError on failure.
-
-Do not add any FastAPI dependencies here.
-
-⸻
-
-Task 5 — Update /users/me to include scopes from authz
-
-Edit file: endpoint implementing GET /users/me (or /auth/me if that’s what you use; match frontend).
-
-Changes:
-	1.	Add param: authz: AuthzContext = Depends(get_authz_context)
-	2.	Return scopes:
-	•	entities: "ALL" if authz.allowed_entities is None else sorted list
-	•	sources: "ALL" if authz.allowed_sources is None else sorted list
-	3.	Keep roles and is_admin
-
-Do not change response shape beyond adding scopes.
+Do not change backend calls here.
 
 ⸻
 
-Task 6 — Enforce admin-only on admin endpoints
+Task 7 — Add “source” awareness for future (even if only one source now)
 
-Edit files: endpoints that manage roles/users/scopes (found in Task 0).
+Wherever source selection is (or if none exists):
+	•	Introduce a getCurrentSource() function (temporary) returning "Chrome" or the selected source.
+	•	Before showing a source option, filter by allowedSources(me) set.
+	•	If the current source is not allowed:
+	•	show a blocking message and disable screens that require data.
 
-For each admin endpoint function:
-	1.	Add param: authz: AuthzContext = Depends(get_authz_context)
-	2.	Add first line: require_admin(authz)
-
-Do not change endpoint outputs.
-
-⸻
-
-Task 7 — Add SQL filtering inputs to the snapshot/workspace repository methods
-
-Edit files: repository methods identified in Task 0 that query snapshots/workspaces.
-
-For each relevant method:
-	1.	Add optional params:
-	•	allowed_entities: list[str] | None = None
-	•	allowed_sources: list[str] | None = None
-	2.	Apply in query:
-	•	if allowed_entities is not None: where(Snapshot.entity_code.in_(allowed_entities))
-	•	if allowed_sources is not None: where(Snapshot.source_code.in_(allowed_sources))
-
-Important:
-	•	Do not post-filter in Python.
-	•	Apply filters as early as possible (on the snapshot/workspace base query).
+This is future-proofing with minimal code.
 
 ⸻
 
-Task 8 — Thread authz into services that call those repos
+Task 8 — Centralize API error handling for 403
 
-Edit service files: the service layer functions that call the repos from Task 7.
+Edit file: your api() helper (src/app/api/http.ts).
 
-For each service method that loads workspaces/grids:
-	1.	Accept authz: AuthzContext (or accept allowed_entities/allowed_sources, but authz is preferred)
-	2.	Call repo with:
-	•	allowed_entities=None if admin else sorted(list(authz.allowed_entities))
-	•	allowed_sources=None if admin else sorted(list(authz.allowed_sources))
+When res.ok === false and status is 403:
+	•	parse body as you already do
+	•	throw the error object as today
+(keep behavior)
+But also: ensure callers can detect status===403 reliably (you already include status).
 
-If a method receives explicit entity_code / source_code:
-	•	call require_entity(authz, entity_code) and require_source(authz, source_code) before querying.
-
-⸻
-
-Task 9 — Update endpoints to pass authz into the services
-
-Edit endpoint files: workspace/grid/override endpoints.
-
-For each endpoint:
-	1.	Add param: authz: AuthzContext = Depends(get_authz_context)
-	2.	Pass authz to the service call (updated in Task 8)
-
-Do not change endpoint paths or response models.
+No UI here, just ensure consistent error shape.
 
 ⸻
 
-Task 10 — Fix “list endpoints” to return only allowed items
+Task 9 — Add a standard “NotAuthorized” component
 
-Edit endpoints/services/repo for:
-	•	listing entities
-	•	listing sources
-	•	listing workspaces (if it returns a list)
+Create file: src/app/components/NotAuthorized.tsx
 
-Rules:
-	•	If admin: no filters
-	•	Else: apply IN (allowed_entities) or IN (allowed_sources) in SQL
-	•	If allowed list is empty: return empty list (200), not 403.
+Use Mantine:
+	•	Show title “Access denied”
+	•	Show small text: “You don’t have permission to access this page.”
+	•	(Optional) show current user email if available
+
+Use it in ProtectedRoute.
 
 ⸻
 
-Task 11 — Add minimal debug logging (temporary, remove later)
+Task 10 — React Query: prevent fetching forbidden entity/source data
 
-Edit get_authz_context only:
-	•	Add a debug log line (using your project logger) showing:
-	•	user id
-	•	is_admin
-	•	counts of allowed entities and sources
-	•	Make it safe (no printing full lists in prod).
+In the query hooks that fetch data by entity/source:
+	•	Add enabled: boolean flag based on permission checks.
 
-Do not add new endpoints for debug.
+Example:
+	•	If query requires entityCode and user cannot access it → enabled: false
+
+Also show a UI message instead of spinners when disabled.
+
+Do not change query keys, only add enabled.
+
+⸻
+
+Task 11 — React Query: invalidate caches on logout
+
+Where logout happens (AuthContext.logout):
+	•	after successful logout, call:
+	•	queryClient.clear() (or remove relevant queries)
+So the next user doesn’t see stale data.
+
+(You have queryClient already.)
 
 ⸻
 
 Task 12 — Smoke-check checklist (no code)
 
-After completing Tasks 1–11, verify manually:
-	1.	Admin user can access any entity/source.
-	2.	Normal user can list only allowed entities/sources.
-	3.	Normal user gets 403 when requesting forbidden entity/source grid.
-	4.	/users/me returns scopes correctly.
-	5.	Admin endpoints return 403 for normal user.
+After Tasks 1–11:
+	1.	Admin can open admin screens.
+	2.	Normal user cannot open admin screens (403 page shown).
+	3.	Entity dropdown only shows allowed entities.
+	4.	Attempt to navigate directly to blocked route shows 403 page (no crash).
+	5.	Queries requiring forbidden entity/source do not fire (React Query enabled=false).
 
-Reply with which endpoints were tested and what happened.
+Reply with which routes and which components were verified.
 
 ⸻
 
-Notes for the agent (do not change these constraints)
-	•	Ignore mockup scopes entirely.
-	•	Don’t refactor unrelated code.
-	•	Push filtering into SQL (WHERE IN), not Python filtering.
-	•	Keep all changes minimal and localized.
+Notes for the agent (don’t violate these constraints)
+	•	Do not remove routes; only gate and hide.
+	•	Do not add complex permission DSL.
+	•	Keep all checks based on /users/me fields only: roles, is_admin, scopes.entities, scopes.sources.
